@@ -6,7 +6,8 @@
 
 {{-- URGENT --}}
 
-@if(!empty($urgent) && $urgent->active===true)
+{{-- URGENT --}}
+@if(!empty($urgent) && method_exists($urgent,'isActiveNow') ? $urgent->isActiveNow() : ($urgent->active ?? false))
   <div class="max-w-7xl mx-auto px-4 mt-6 mb-6">
     <div class="rounded-lg p-3 text-sm flex items-start gap-3 shadow-md {{ ($urgent->level ?? 'info') === 'danger' ? 'bg-red-600 text-white' : ((($urgent->level ?? '') === 'warning') ? 'bg-yellow-50 text-yellow-800' : 'bg-[var(--accent-2)] text-white') }}">
       <div class="font-bold">{{ $urgent->title }}</div>
