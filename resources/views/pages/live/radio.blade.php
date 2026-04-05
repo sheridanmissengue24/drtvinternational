@@ -137,7 +137,7 @@
     const waveformEl = document.getElementById('waveform');
 
     // Remplacez par votre flux live final (idéalement HTTPS).
-    const STREAM_URL = 'https://streaming.nrjaudio.fm/oumvmk8fnozc?origine=fluxradios';
+    const STREAM_URL = 'https://stream.dmtechcongo.com/live/radio.m3u8';
 
     // Audio HTML5 (flux live)
     const audio = new Audio();
