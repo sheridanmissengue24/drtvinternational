@@ -7,7 +7,7 @@
   'ctaSecondaryText' => 'Nous contacter',
   'ctaSecText' => 'Ecouter la DRN1',
   // Optionnel: passer un flux radio depuis la page
-  'radioStreamUrl' => 'https://streaming.nrjaudio.fm/oumvmk8fnozc?origine=fluxradios',
+  'radioStreamUrl' => 'https://stream.dmtechcongo.com/live/radio.m3u8',
 ])
 
 <section class="hero-bleed relative w-full overflow-hidden bg-dark text-white">
