@@ -121,6 +121,11 @@
     display: block;
     border-radius: 10px;
   }
+
+  @media (max-width: 480px) {
+    #waveform { height: 76px; }
+    #waveCanvas { height: 76px; }
+  }
 </style>
 @endpush
 
@@ -136,17 +141,21 @@
     const volumeEl = document.getElementById('volume');
     const waveformEl = document.getElementById('waveform');
 
-    // Remplacez par votre flux live final (idéalement HTTPS).
     const STREAM_URL = 'https://stream.dmtechcongo.com/live/radio.m3u8';
+    const isHls = typeof STREAM_URL === 'string' && STREAM_URL.toLowerCase().includes('.m3u8');
 
-    // Audio HTML5 (flux live)
+    const USE_PROXY = true;
+    const EFFECTIVE_URL = (USE_PROXY && isHls)
+      ? @json(url('/hls-proxy')) + '?url=' + encodeURIComponent(STREAM_URL)
+      : STREAM_URL;
+
     const audio = new Audio();
     audio.preload = 'none';
-    audio.crossOrigin = 'anonymous';
-    audio.src = STREAM_URL;
     audio.volume = parseFloat(volumeEl?.value ?? '0.8');
 
-    // Live: durée inconnue
+    let hls = null;
+    let starting = false;
+
     durationEl.textContent = 'LIVE';
     currentTimeEl.textContent = '—:—';
 
@@ -166,27 +175,159 @@
       }
     };
 
-    // Waveform canvas animé (design pro, sans décoder le flux)
+    async function sleep(ms) {
+      return new Promise((r) => setTimeout(r, ms));
+    }
+
+    function resetAudio() {
+      try { audio.pause(); } catch (e) {}
+      audio.removeAttribute('src');
+      try { audio.load(); } catch (e) {}
+    }
+
+    function destroyHls() {
+      if (hls) {
+        try { hls.destroy(); } catch (e) {}
+        hls = null;
+      }
+    }
+
+    function loadHlsJs() {
+      if (window.Hls) return Promise.resolve();
+
+      return new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.18/dist/hls.min.js';
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    }
+
+    async function playWhenReady(timeoutMs = 15000) {
+      const start = Date.now();
+
+      // 1st attempt right away
+      try { await audio.play(); } catch (e) {}
+
+      while (Date.now() - start < timeoutMs) {
+        if (!audio.paused && !audio.ended) return;
+
+        // readyState >= 3 => HAVE_FUTURE_DATA
+        if (audio.readyState >= 3) {
+          try { await audio.play(); } catch (e) {}
+        }
+
+        await sleep(200);
+      }
+
+      throw new Error('PLAY_TIMEOUT');
+    }
+
+    async function attachAndPlay() {
+      destroyHls();
+      resetAudio();
+
+      // Safari/iOS natif
+      if (isHls && audio.canPlayType('application/vnd.apple.mpegurl')) {
+        audio.src = EFFECTIVE_URL;
+        audio.load();
+        await playWhenReady(15000);
+        return;
+      }
+
+      // HLS via hls.js
+      if (isHls) {
+        await loadHlsJs();
+
+        if (!window.Hls || !window.Hls.isSupported()) {
+          throw new Error('HLS_NOT_SUPPORTED');
+        }
+
+        hls = new window.Hls({
+          enableWorker: true,
+          lowLatencyMode: true,
+
+          // retries (évite devoir recliquer)
+          manifestLoadingMaxRetry: 4,
+          manifestLoadingRetryDelay: 500,
+          manifestLoadingMaxRetryTimeout: 8000,
+
+          levelLoadingMaxRetry: 4,
+          levelLoadingRetryDelay: 500,
+          levelLoadingMaxRetryTimeout: 8000,
+
+          fragLoadingMaxRetry: 6,
+          fragLoadingRetryDelay: 500,
+          fragLoadingMaxRetryTimeout: 15000,
+        });
+
+        hls.on(window.Hls.Events.ERROR, function (_, data) {
+          console.error('HLS error', data);
+          if (data && data.fatal) {
+            setUI('idle');
+            statusText.textContent = `HLS fatal: ${data.type}${data.details ? ' / ' + data.details : ''}`;
+          }
+        });
+
+        await new Promise((resolve) => {
+          hls.once(window.Hls.Events.MEDIA_ATTACHED, resolve);
+          hls.attachMedia(audio);
+        });
+
+        hls.loadSource(EFFECTIVE_URL);
+
+        await new Promise((resolve, reject) => {
+          const t = setTimeout(() => reject(new Error('MANIFEST_TIMEOUT')), 12000);
+          hls.once(window.Hls.Events.MANIFEST_PARSED, () => { clearTimeout(t); resolve(); });
+          hls.once(window.Hls.Events.ERROR, (_, data) => {
+            if (data?.fatal) { clearTimeout(t); reject(data); }
+          });
+        });
+
+        await playWhenReady(15000);
+        return;
+      }
+
+      // Non-HLS fallback
+      audio.src = EFFECTIVE_URL;
+      audio.load();
+      await playWhenReady(12000);
+    }
+
+    // Waveform (responsive)
     const canvas = document.createElement('canvas');
     canvas.id = 'waveCanvas';
     waveformEl.innerHTML = '';
     waveformEl.appendChild(canvas);
-
     const ctx = canvas.getContext('2d');
 
+    const getWaveHeight = () => {
+      const rect = waveformEl.getBoundingClientRect();
+      return Math.max(60, Math.round(rect.height || 92));
+    };
+
     const resize = () => {
-      const dpr = Math.max(1, window.devicePixelRatio || 1);
-      const w = canvas.clientWidth || waveformEl.clientWidth || 600;
-      const h = 92;
+      const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+      const rect = waveformEl.getBoundingClientRect();
+      const w = Math.max(280, Math.round(rect.width || 600));
+      const h = getWaveHeight();
 
       canvas.width = Math.floor(w * dpr);
       canvas.height = Math.floor(h * dpr);
+      canvas.style.width = w + 'px';
       canvas.style.height = h + 'px';
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     };
 
-    window.addEventListener('resize', resize);
+    window.addEventListener('resize', resize, { passive: true });
+    window.addEventListener('orientationchange', resize, { passive: true });
+
+    const ro = ('ResizeObserver' in window) ? new ResizeObserver(() => resize()) : null;
+    ro?.observe(waveformEl);
+
     requestAnimationFrame(resize);
+    setTimeout(resize, 250);
 
     let raf = 0;
     const bars = 64;
@@ -203,10 +344,10 @@
     }
 
     const drawIdle = () => {
-      const w = canvas.clientWidth, h = 92;
+      const w = Math.round(waveformEl.getBoundingClientRect().width || canvas.clientWidth || 600);
+      const h = getWaveHeight();
       ctx.clearRect(0, 0, w, h);
 
-      // subtle midline
       ctx.fillStyle = 'rgba(255,255,255,0.06)';
       ctx.fillRect(0, h/2, w, 1);
 
@@ -230,7 +371,8 @@
     };
 
     const drawPlaying = (t) => {
-      const w = canvas.clientWidth, h = 92;
+      const w = Math.round(waveformEl.getBoundingClientRect().width || canvas.clientWidth || 600);
+      const h = getWaveHeight();
       ctx.clearRect(0, 0, w, h);
 
       const gap = 3;
@@ -240,7 +382,7 @@
       for (let i = 0; i < bars; i++) {
         const x = i * (bw + gap);
         const phase = (t / 260) + (i / 10);
-        const amp = 10 + (Math.sin(phase) * 0.5 + 0.5) * 46;
+        const amp = 10 + (Math.sin(phase) * 0.5 + 0.5) * (h - 20);
 
         const y = baseY - amp / 2;
         const grad = ctx.createLinearGradient(0, y, 0, y + amp);
@@ -261,30 +403,42 @@
       drawIdle();
     };
 
-    // Initial render
     stopAnim();
 
     // Controls
     btn.addEventListener('click', async () => {
+      if (starting) return;
+
       if (!audio.paused) {
         audio.pause();
+        destroyHls();
         setUI('idle');
         stopAnim();
         return;
       }
 
+      starting = true;
       setUI('loading');
+
       try {
-        // Force reconnect on each play (useful after errors)
-        audio.src = STREAM_URL;
-        await audio.play();
+        await attachAndPlay();
         setUI('playing');
         if (!raf) raf = requestAnimationFrame(drawPlaying);
       } catch (e) {
+        destroyHls();
         setUI('idle');
         stopAnim();
-        statusText.textContent = "Impossible de lire le flux (mixed content / CORS / format).";
-        console.error('Audio play error:', e);
+
+        statusText.textContent =
+          (e && e.name === 'NotAllowedError') ? "Clique encore sur Écouter (autoplay bloqué)." :
+          (e && e.message === 'HLS_NOT_SUPPORTED') ? "HLS non supporté sur ce navigateur." :
+          (e && e.message === 'MANIFEST_TIMEOUT') ? "Le flux met trop de temps à répondre (manifest)." :
+          (e && e.message === 'PLAY_TIMEOUT') ? "Le flux met trop de temps à démarrer." :
+          "Impossible de lire le flux (réseau/CORS/format).";
+
+        console.error('Start error:', e);
+      } finally {
+        starting = false;
       }
     });
 
@@ -298,6 +452,7 @@
       stopAnim();
     });
     audio.addEventListener('error', () => {
+      destroyHls();
       setUI('idle');
       stopAnim();
       statusText.textContent = "Erreur de lecture du flux.";
@@ -308,6 +463,11 @@
         audio.volume = parseFloat(e.target.value);
       });
     }
+
+    window.addEventListener('beforeunload', () => {
+      ro?.disconnect();
+      destroyHls();
+    });
   })();
 </script>
 @endpush

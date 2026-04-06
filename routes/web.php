@@ -16,6 +16,7 @@ use App\Http\Controllers\Admin\ProgrammeController as AdminProgrammeController;
 use App\Http\Controllers\Admin\CategoryController as AdminCategoryController;
 use App\Http\Controllers\Admin\UrgentInfoController as AdminUrgentInfoController;
 use App\Http\Controllers\Admin\UserController as AdminUserController;
+use App\Http\Controllers\HlsProxyController;
 
 Route::get('',[HomeController::class,'index'])->name('home');
 Route::get('/actualites',[ActualiteController::class,'index'])->name('actualites.index');
@@ -46,6 +47,9 @@ Route::get('live-radio', [LiveStreamController::class,'radio'])->name('live.radi
 
 Route::get('/programmes', [ProgrammeController::class, 'index'])->name('programme.index');
 Route::get('/programme/{programme:slug}', [ProgrammeController::class, 'show'])->name('programme.show');
+
+Route::get('/hls-proxy', [HlsProxyController::class, 'handle'])->name('hls.proxy');
+
 
 // Auth (custom)
 Route::middleware('guest')->group(function () {

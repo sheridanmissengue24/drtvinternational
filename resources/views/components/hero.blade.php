@@ -11,7 +11,6 @@
 ])
 
 <section class="hero-bleed relative w-full overflow-hidden bg-dark text-white">
-  {{-- Background accents (aligné radio) --}}
   <div class="pointer-events-none absolute inset-0">
     <div class="absolute -top-24 -left-24 h-80 w-80 rounded-full blur-3xl opacity-30"
          style="background: radial-gradient(circle, var(--accent), transparent 60%);"></div>
@@ -29,7 +28,6 @@
 
   <div class="relative mx-auto max-w-7xl px-6 py-16 lg:py-24">
     <div class="grid grid-cols-1 gap-10 lg:grid-cols-12 lg:items-center">
-      {{-- Texte --}}
       <div class="lg:col-span-7">
         <div class="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm">
           <span class="inline-flex h-2 w-2 rounded-full"
@@ -63,17 +61,9 @@
              style="background: linear-gradient(90deg, var(--accent), var(--accent-2));">
             {{ $ctaSecText }}
           </a>
-
         </div>
-
-        {{-- <div class="mt-8 flex flex-wrap gap-3 text-xs text-white/60">
-          <span class="rounded-full border border-white/10 bg-black/20 px-3 py-2">Streaming</span>
-          <span class="rounded-full border border-white/10 bg-black/20 px-3 py-2">Replays</span>
-          <span class="rounded-full border border-white/10 bg-black/20 px-3 py-2">Mobile</span>
-        </div> --}}
       </div>
 
-      {{-- Carte visuelle (glass) + lecteur radio --}}
       <div class="lg:col-span-5">
         <div class="rounded-2xl border border-white/10 bg-white/5 p-5 shadow-2xl backdrop-blur-md md:p-6">
           <div class="flex items-center justify-between">
@@ -98,7 +88,6 @@
             </span>
           </div>
 
-          {{-- Mini lecteur radio intégré --}}
           <div class="mt-5 rounded-xl border border-white/10 bg-black/20 p-4">
             <div class="flex items-center justify-between gap-4">
               <div class="min-w-0">
@@ -119,7 +108,6 @@
               </div>
             </div>
 
-            {{-- waveform décorative (simple) --}}
             <div class="mt-4 flex items-end gap-1.5 overflow-hidden" aria-hidden="true">
               @for ($i = 0; $i < 44; $i++)
                 <span class="hero-bar inline-block w-1.5 rounded"
@@ -148,7 +136,6 @@
 @push('scripts')
 <script>
   (() => {
-    // Eviter collisions si le composant apparaît plusieurs fois
     const root = document.currentScript?.closest('section') || document;
     const btn = root.querySelector('#heroRadioBtn');
     const icon = root.querySelector('#heroRadioIcon');
@@ -159,12 +146,19 @@
     if (!btn) return;
 
     const STREAM_URL = @json($radioStreamUrl);
+    const isHls = typeof STREAM_URL === 'string' && STREAM_URL.toLowerCase().includes('.m3u8');
+
+    const USE_PROXY = true;
+    const EFFECTIVE_URL = (USE_PROXY && isHls)
+      ? @json(url('/hls-proxy')) + '?url=' + encodeURIComponent(STREAM_URL)
+      : STREAM_URL;
 
     const audio = new Audio();
     audio.preload = 'none';
-    audio.crossOrigin = 'anonymous';
-    audio.src = STREAM_URL;
     audio.volume = parseFloat(vol?.value ?? '0.8');
+
+    let hls = null;
+    let starting = false;
 
     const setUI = (state) => {
       if (state === 'playing') {
@@ -182,22 +176,146 @@
       }
     };
 
+    async function sleep(ms) {
+      return new Promise((r) => setTimeout(r, ms));
+    }
+
+    function resetAudio() {
+      try { audio.pause(); } catch (e) {}
+      audio.removeAttribute('src');
+      try { audio.load(); } catch (e) {}
+    }
+
+    function destroyHls() {
+      if (hls) {
+        try { hls.destroy(); } catch (e) {}
+        hls = null;
+      }
+    }
+
+    function loadHlsJs() {
+      if (window.Hls) return Promise.resolve();
+
+      return new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/hls.js@1.5.18/dist/hls.min.js';
+        s.onload = resolve;
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    }
+
+    async function playWhenReady(timeoutMs = 15000) {
+      const start = Date.now();
+      try { await audio.play(); } catch (e) {}
+
+      while (Date.now() - start < timeoutMs) {
+        if (!audio.paused && !audio.ended) return;
+
+        if (audio.readyState >= 3) {
+          try { await audio.play(); } catch (e) {}
+        }
+
+        await sleep(200);
+      }
+
+      throw new Error('PLAY_TIMEOUT');
+    }
+
+    async function attachAndPlay() {
+      destroyHls();
+      resetAudio();
+
+      if (isHls && audio.canPlayType('application/vnd.apple.mpegurl')) {
+        audio.src = EFFECTIVE_URL;
+        audio.load();
+        await playWhenReady(15000);
+        return;
+      }
+
+      if (isHls) {
+        await loadHlsJs();
+        if (!window.Hls || !window.Hls.isSupported()) throw new Error('HLS_NOT_SUPPORTED');
+
+        hls = new window.Hls({
+          enableWorker: true,
+          lowLatencyMode: true,
+
+          manifestLoadingMaxRetry: 4,
+          manifestLoadingRetryDelay: 500,
+          manifestLoadingMaxRetryTimeout: 8000,
+
+          levelLoadingMaxRetry: 4,
+          levelLoadingRetryDelay: 500,
+          levelLoadingMaxRetryTimeout: 8000,
+
+          fragLoadingMaxRetry: 6,
+          fragLoadingRetryDelay: 500,
+          fragLoadingMaxRetryTimeout: 15000,
+        });
+
+        hls.on(window.Hls.Events.ERROR, (_, data) => {
+          console.error('HLS error', data);
+          if (data?.fatal) {
+            setUI('idle');
+            status.textContent = `HLS fatal: ${data.type}${data.details ? ' / ' + data.details : ''}`;
+          }
+        });
+
+        await new Promise((resolve) => {
+          hls.once(window.Hls.Events.MEDIA_ATTACHED, resolve);
+          hls.attachMedia(audio);
+        });
+
+        hls.loadSource(EFFECTIVE_URL);
+
+        await new Promise((resolve, reject) => {
+          const t = setTimeout(() => reject(new Error('MANIFEST_TIMEOUT')), 12000);
+          hls.once(window.Hls.Events.MANIFEST_PARSED, () => { clearTimeout(t); resolve(); });
+          hls.once(window.Hls.Events.ERROR, (_, data) => {
+            if (data?.fatal) { clearTimeout(t); reject(data); }
+          });
+        });
+
+        await playWhenReady(15000);
+        return;
+      }
+
+      audio.src = EFFECTIVE_URL;
+      audio.load();
+      await playWhenReady(12000);
+    }
+
     btn.addEventListener('click', async () => {
+      if (starting) return;
+
       if (!audio.paused) {
         audio.pause();
+        destroyHls();
         setUI('idle');
         return;
       }
 
+      starting = true;
       setUI('loading');
+
       try {
-        audio.src = STREAM_URL; // force reconnect
-        await audio.play();
+        await attachAndPlay();
         setUI('playing');
       } catch (e) {
+        destroyHls();
         setUI('idle');
-        status.textContent = 'Lecture impossible (CORS/HTTPS/format).';
-        console.error(e);
+
+        status.textContent =
+          (e && e.name === 'NotAllowedError') ? "Clique encore sur Écouter (autoplay bloqué)." :
+          (e && e.message === 'HLS_NOT_SUPPORTED') ? "HLS non supporté." :
+          (e && e.message === 'MANIFEST_TIMEOUT') ? "Flux lent (manifest timeout)." :
+          (e && e.message === 'PLAY_TIMEOUT') ? "Flux lent (play timeout)." :
+          "Lecture impossible.";
+
+        console.error('Start error:', e);
+      } finally {
+        starting = false;
       }
     });
 
@@ -205,13 +323,13 @@
     audio.addEventListener('playing', () => setUI('playing'));
     audio.addEventListener('pause', () => setUI('idle'));
     audio.addEventListener('error', () => {
+      destroyHls();
       setUI('idle');
       status.textContent = 'Erreur de lecture.';
     });
 
-    if (vol) {
-      vol.addEventListener('input', (e) => audio.volume = parseFloat(e.target.value));
-    }
+    if (vol) vol.addEventListener('input', (e) => audio.volume = parseFloat(e.target.value));
+    window.addEventListener('beforeunload', destroyHls);
   })();
 </script>
 @endpush
